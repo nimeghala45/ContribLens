@@ -194,40 +194,57 @@ def callNemotron(systemPrompt, userPrompt, maxTokens=600):
     if not nemotronKey:
         return None, "NVIDIA_API_KEY not found in .env file"
 
-    try:
-        headers = {
-            "Authorization": f"Bearer {nemotronKey}",
-            "Content-Type": "application/json"
-        }
+    headers = {
+        "Authorization": f"Bearer {nemotronKey}",
+        "Content-Type": "application/json"
+    }
 
-        body = {
-            "model": "nvidia/llama-3.3-nemotron-super-49b-v1",
-            "messages": [
-                {"role": "system", "content": systemPrompt},
-                {"role": "user", "content": userPrompt}
-            ],
-            "max_tokens": maxTokens,
-            "temperature": 0.2
-        }
+    primaryModel = "nvidia/llama-3.3-nemotron-super-49b-v1"
+    fallbackModel = "meta/llama-3.1-8b-instruct"
 
-        response = requests.post(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=30
-        )
+    for attempt, model in enumerate([primaryModel, fallbackModel]):
+        try:
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": systemPrompt},
+                    {"role": "user", "content": userPrompt}
+                ],
+                "max_tokens": maxTokens,
+                "temperature": 0.2
+            }
 
-        if response.status_code != 200:
-            return None, f"API error {response.status_code}: {response.text[:300]}"
+            waitTime = 40 if attempt == 0 else 20
 
-        data = response.json()
-        return data["choices"][0]["message"]["content"], None
+            response = requests.post(
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=waitTime
+            )
 
-    except requests.exceptions.Timeout:
-        return None, "Timed out — NVIDIA API took too long to respond"
+            if response.status_code != 200:
+                continue
 
-    except Exception as e:
-        return None, str(e)
+            data = response.json()
+            result = data["choices"][0]["message"]["content"]
+
+            if attempt == 1:
+                result = result + "\n\n*(Response)*"
+
+            return result, None
+
+        except requests.exceptions.Timeout:
+            if attempt == 0:
+                continue
+            return None, "Both models timed out. Try again in a moment."
+
+        except Exception as e:
+            if attempt == 0:
+                continue
+            return None, str(e)
+
+    return None, "Could not get a response. Check your API key and try again."
 
 
 def buildMentorPrompt(repoName, files, readme, issueCount, score, reasons, missing, complexity):
@@ -610,7 +627,7 @@ Evidence: {evidenceText}{warningNote}
 
                         if draftResponse:
                             st.code(draftResponse, language=None)
-                            st.caption("Copy and paste this as a comment on the GitHub issue to express interest.")
+                            st.caption("AI generated draft. Review before posting.")
                         else:
                             st.error(f"Draft error: {draftError}")
 
@@ -620,6 +637,27 @@ Evidence: {evidenceText}{warningNote}
 
         with inner4:
             st.subheader("🚶 Contributor Journey Simulation")
+
+            friction = 0
+            if "README.md" not in files:
+                friction += 50
+            if "CONTRIBUTING.md" not in files:
+                friction += 30
+            if "docs" not in files:
+                friction += 20
+            if len(issues) == 0:
+                friction += 15
+            friction = min(friction, 100)
+
+            fc1, fc2 = st.columns(2)
+            fc1.metric("Contributor Friction Score", f"{friction}/100")
+            if friction >= 70:
+                fc2.error("🔴 High friction — new contributors will struggle")
+            elif friction >= 40:
+                fc2.warning("🟡 Medium friction — some barriers exist")
+            else:
+                fc2.success("🟢 Low friction — fairly easy to get started")
+
             st.write("See exactly what a brand new contributor experiences when they arrive at this repo — step by step.")
             st.caption("Powered by Nemotron 3 Super reasoning over actual repository structure.")
 
